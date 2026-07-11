@@ -32,8 +32,9 @@ type Frame struct {
 
 var (
 	upgrader = websocket.Upgrader{
-		ReadBufferSize: 1024 * 1024,
-		CheckOrigin:    func(r *http.Request) bool { return true },
+		ReadBufferSize:  1024 * 1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     func(r *http.Request) bool { return true },
 	}
 	framePool = sync.Pool{
 		New: func() interface{} { return make([]byte, 0, 500*1024) },
@@ -58,7 +59,9 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir("../mobile")))
 
 	fmt.Printf("[GO RELAY] Running on http://10.91.53.25%s\n", Port)
-	log.Fatal(http.ListenAndServe(Port, nil))
+	if err := http.ListenAndServe(Port, nil); err != nil {
+		log.Fatalf("Server error: %v", err)
+	}
 }
 
 func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
@@ -67,6 +70,7 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 		return
 	}
 	defer conn.Close()
+	log.Printf("[GO RELAY] Phone connected: %s", conn.RemoteAddr().String())
 
 	for {
 		messageType, reader, err := conn.NextReader()

@@ -1,76 +1,87 @@
 <!DOCTYPE html>
 <html lang="en">
 <body>
-  <h1>SplatMesh Core</h1>
-  <canvas id="canvas" style="display:none"></canvas>
-  <div id="status">Connecting...</div>
-  <video id="video" autoplay playsinline muted></video>
+	<h1>SplatMesh Core</h1>
+	<canvas id="canvas" style="display:none"></canvas>
+	<div id="status">Connecting...</div>
+	<video id="video" autoplay playsinline muted></video>
 
-  <script>
-    const PC_IP = '10.91.53.25'; 
-    const WS_PORT = 3000;
-    
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const statusEl = document.getElementById('status');
-    let ws;
-    
-    // IMU State
-    let curPitch = 0, curRoll = 0, curYaw = 0;
-    window.addEventListener('deviceorientation', (e) => {
-        curPitch = e.beta || 0;
-        curRoll = e.gamma || 0;
-        curYaw = e.alpha || 0;
-    });
+	<script>
+		const PC_IP = '10.91.53.25';
+		const WS_PORT = 3000;
 
-    function connect() {
-      ws = new WebSocket(`ws://${PC_IP}:${WS_PORT}/ws`);
-      ws.binaryType = 'arraybuffer';
-      ws.onopen = () => statusEl.textContent = 'Connected — Streaming';
-      ws.onclose = () => { setTimeout(connect, 2000); statusEl.textContent = 'Disconnected'; };
-    }
+		const video = document.getElementById('video');
+		const canvas = document.getElementById('canvas');
+		const ctx = canvas.getContext('2d');
+		const statusEl = document.getElementById('status');
+		let ws;
 
-    function createHeader() {
-        const buffer = new ArrayBuffer(32);
-        const view = new DataView(buffer);
-        view.setBigInt64(0, BigInt(Date.now()), true);
-        view.setFloat32(8, curPitch, true);
-        view.setFloat32(12, curRoll, true);
-        view.setFloat32(16, curYaw, true);
-        return buffer;
-    }
+		// IMU State
+		let curPitch = 0, curRoll = 0, curYaw = 0;
+		window.addEventListener('deviceorientation', (e) => {
+			curPitch = e.beta || 0;
+			curRoll = e.gamma || 0;
+			curYaw = e.alpha || 0;
+		});
 
-    function captureAndSend() {
-      if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
-        requestAnimationFrame(captureAndSend);
-        return;
-      }
+		function connect() {
+			ws = new WebSocket(`ws://${PC_IP}:${WS_PORT}/ws`);
+			ws.binaryType = 'arraybuffer';
+			ws.onopen = () => statusEl.textContent = 'Connected - Streaming';
+			ws.onclose = () => {
+				setTimeout(connect, 2000);
+				statusEl.textContent = 'Disconnected';
+			};
+		}
 
-      const w = Math.round(video.videoWidth * 0.5);
-      const h = Math.round(video.videoHeight * 0.5);
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w; canvas.height = h;
-      }
+		function createHeader() {
+			const buffer = new ArrayBuffer(32);
+			const view = new DataView(buffer);
+			view.setBigInt64(0, BigInt(Date.now()), true);
+			view.setFloat32(8, curPitch, true);
+			view.setFloat32(12, curRoll, true);
+			view.setFloat32(16, curYaw, true);
+			return buffer;
+		}
 
-      ctx.drawImage(video, 0, 0, w, h);
-      
-      canvas.toBlob(blob => {
-        if (blob && ws.readyState === WebSocket.OPEN) {
-          // Send [Header 32b] + [Image blob]
-          const packet = new Blob([createHeader(), blob]);
-          ws.send(packet);
-        }
-        requestAnimationFrame(captureAndSend);
-      }, 'image/jpeg', 0.85);
-    }
+		function captureAndSend() {
+			if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
+				requestAnimationFrame(captureAndSend);
+				return;
+			}
 
-    navigator.mediaDevices.getUserMedia({ 
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
-    }).then(stream => {
-        video.srcObject = stream;
-        video.onloadedmetadata = () => { connect(); captureAndSend(); };
-    });
-  </script>
+			const w = Math.round(video.videoWidth * 0.5);
+			const h = Math.round(video.videoHeight * 0.5);
+			if (canvas.width !== w || canvas.height !== h) {
+				canvas.width = w;
+				canvas.height = h;
+			}
+
+			ctx.drawImage(video, 0, 0, w, h);
+
+			canvas.toBlob(blob => {
+				if (blob && ws.readyState === WebSocket.OPEN) {
+					// Send [Header 32b] + [Image blob]
+					const packet = new Blob([createHeader(), blob]);
+					ws.send(packet);
+				}
+				requestAnimationFrame(captureAndSend);
+			}, 'image/jpeg', 0.85);
+		}
+
+		navigator.mediaDevices.getUserMedia({
+			video: {
+				facingMode: 'environment',
+				width: { ideal: 1280 },
+				height: { ideal: 720 }
+			}
+		}).then(stream => {
+			video.srcObject = stream;
+			video.onloadedmetadata = () => {
+				connect();
+				captureAndSend();
+			};
+		});
+	</script>
 </body>
 </html>
