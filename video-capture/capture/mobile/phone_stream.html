@@ -1,87 +1,202 @@
 <!DOCTYPE html>
 <html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SplatMesh Scanner</title>
+  <style>
+    body {
+      margin: 0; padding: 0; background: #000; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden; display: flex; flex-direction: column; height: 100vh;
+    }
+    #video {
+      width: 100%; height: 100%; object-fit: cover; position: absolute; z-index: 1;
+    }
+    #ui-layer {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 10; display: flex; flex-direction: column; justify-content: space-between;
+      pointer-events: none; /* Let clicks pass through to video if needed */
+    }
+    .top-bar {
+      padding: 20px; display: flex; justify-content: space-between;
+      background: linear-gradient(rgba(0,0,0,0.7), transparent);
+    }
+    #status {
+      background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 20px; font-size: 14px;
+      backdrop-filter: blur(5px);
+    }
+    .bottom-bar {
+      padding: 30px; display: flex; justify-content: center; align-items: center;
+      background: linear-gradient(transparent, rgba(0,0,0,0.8)); pointer-events: auto;
+    }
+    #recordBtn {
+      width: 70px; height: 70px; border-radius: 50%; background: #ff3b30;
+      border: 4px solid #fff; outline: none; cursor: pointer; transition: all 0.2s;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    #recordBtn.recording {
+      border-radius: 15px; background: #ff3b30; transform: scale(0.85);
+    }
+    #initOverlay {
+      position: absolute; z-index: 20; top: 0; left: 0; width: 100%; height: 100%;
+      background: #000; display: flex; justify-content: center; align-items: center; pointer-events: auto;
+    }
+    #startCameraBtn {
+      padding: 15px 30px; font-size: 18px; background: #007aff; color: #fff;
+      border: none; border-radius: 10px; cursor: pointer;
+    }
+    canvas { display: none; }
+  </style>
+</head>
 <body>
-	<h1>SplatMesh Core</h1>
-	<canvas id="canvas" style="display:none"></canvas>
-	<div id="status">Connecting...</div>
-	<video id="video" autoplay playsinline muted></video>
 
-	<script>
-		const PC_IP = '10.91.53.25';
-		const WS_PORT = 3000;
+  <!-- Initial Permissions Overlay -->
+  <div id="initOverlay">
+    <button id="startCameraBtn">Enable Camera & Sensors</button>
+  </div>
 
-		const video = document.getElementById('video');
-		const canvas = document.getElementById('canvas');
-		const ctx = canvas.getContext('2d');
-		const statusEl = document.getElementById('status');
-		let ws;
+  <!-- Video Feed -->
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
 
-		// IMU State
-		let curPitch = 0, curRoll = 0, curYaw = 0;
-		window.addEventListener('deviceorientation', (e) => {
-			curPitch = e.beta || 0;
-			curRoll = e.gamma || 0;
-			curYaw = e.alpha || 0;
-		});
+  <!-- UI Overlay -->
+  <div id="ui-layer">
+    <div class="top-bar">
+      <div id="status">Disconnected</div>
+      <div id="frameCount" style="display:none; background: rgba(255,0,0,0.2); padding: 6px 12px; border-radius: 20px; font-size: 14px;">0 frames</div>
+    </div>
+    <div class="bottom-bar">
+      <button id="recordBtn" disabled></button>
+    </div>
+  </div>
 
-		function connect() {
-			ws = new WebSocket(`ws://${PC_IP}:${WS_PORT}/ws`);
-			ws.binaryType = 'arraybuffer';
-			ws.onopen = () => statusEl.textContent = 'Connected - Streaming';
-			ws.onclose = () => {
-				setTimeout(connect, 2000);
-				statusEl.textContent = 'Disconnected';
-			};
-		}
+  <script>
+    const PC_IP = '10.91.53.25'; 
+    const WS_PORT = 3000;
+    
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const recordBtn = document.getElementById('recordBtn');
+    const frameCountEl = document.getElementById('frameCount');
+    
+    let ws;
+    let isRecording = false;
+    let framesSent = 0;
+    
+    // IMU State
+    let curPitch = 0, curRoll = 0, curYaw = 0;
+    window.addEventListener('deviceorientation', (e) => {
+        curPitch = e.beta || 0;
+        curRoll = e.gamma || 0;
+        curYaw = e.alpha || 0;
+    });
 
-		function createHeader() {
-			const buffer = new ArrayBuffer(32);
-			const view = new DataView(buffer);
-			view.setBigInt64(0, BigInt(Date.now()), true);
-			view.setFloat32(8, curPitch, true);
-			view.setFloat32(12, curRoll, true);
-			view.setFloat32(16, curYaw, true);
-			return buffer;
-		}
+    function connect() {
+      ws = new WebSocket(`ws://${PC_IP}:${WS_PORT}/ws`);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        statusEl.textContent = 'Server Ready';
+        statusEl.style.background = 'rgba(52, 199, 89, 0.4)';
+        recordBtn.disabled = false;
+      };
+      ws.onclose = () => { 
+        statusEl.textContent = 'Disconnected';
+        statusEl.style.background = 'rgba(255, 59, 48, 0.4)';
+        recordBtn.disabled = true;
+        if(isRecording) toggleRecording(); // Auto-stop if connection drops
+        setTimeout(connect, 2000); 
+      };
+    }
 
-		function captureAndSend() {
-			if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
-				requestAnimationFrame(captureAndSend);
-				return;
-			}
+    recordBtn.onclick = toggleRecording;
 
-			const w = Math.round(video.videoWidth * 0.5);
-			const h = Math.round(video.videoHeight * 0.5);
-			if (canvas.width !== w || canvas.height !== h) {
-				canvas.width = w;
-				canvas.height = h;
-			}
+    function toggleRecording() {
+        if (!isRecording) {
+            // Start
+            ws.send("START");
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            framesSent = 0;
+            frameCountEl.style.display = 'block';
+            frameCountEl.textContent = '0 frames';
+        } else {
+            // Stop
+            ws.send("STOP");
+            isRecording = false;
+            recordBtn.classList.remove('recording');
+            frameCountEl.style.display = 'none';
+        }
+    }
 
-			ctx.drawImage(video, 0, 0, w, h);
+    function createHeader() {
+        const buffer = new ArrayBuffer(32);
+        const view = new DataView(buffer);
+        view.setBigInt64(0, BigInt(Date.now()), true);
+        view.setFloat32(8, curPitch, true);
+        view.setFloat32(12, curRoll, true);
+        view.setFloat32(16, curYaw, true);
+        return buffer;
+    }
 
-			canvas.toBlob(blob => {
-				if (blob && ws.readyState === WebSocket.OPEN) {
-					// Send [Header 32b] + [Image blob]
-					const packet = new Blob([createHeader(), blob]);
-					ws.send(packet);
-				}
-				requestAnimationFrame(captureAndSend);
-			}, 'image/jpeg', 0.85);
-		}
+    function captureAndSend() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
+        requestAnimationFrame(captureAndSend);
+        return;
+      }
 
-		navigator.mediaDevices.getUserMedia({
-			video: {
-				facingMode: 'environment',
-				width: { ideal: 1280 },
-				height: { ideal: 720 }
-			}
-		}).then(stream => {
-			video.srcObject = stream;
-			video.onloadedmetadata = () => {
-				connect();
-				captureAndSend();
-			};
-		});
-	</script>
+      // Only process and send if we are actively recording
+      if (isRecording) {
+          const w = Math.round(video.videoWidth * 0.5);
+          const h = Math.round(video.videoHeight * 0.5);
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w; canvas.height = h;
+          }
+
+          ctx.drawImage(video, 0, 0, w, h);
+          
+          canvas.toBlob(blob => {
+            if (blob && ws.readyState === WebSocket.OPEN && isRecording) {
+              const packet = new Blob([createHeader(), blob]);
+              ws.send(packet);
+              
+              framesSent++;
+              if(framesSent % 5 === 0) frameCountEl.textContent = `${framesSent} frames`;
+            }
+          }, 'image/jpeg', 0.85);
+      }
+      
+      requestAnimationFrame(captureAndSend);
+    }
+
+    // Initialization (handles iOS strict permission models)
+    document.getElementById('startCameraBtn').onclick = () => {
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            DeviceOrientationEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') initCamera();
+                    else alert("Sensors required for 3D tracking.");
+                })
+                .catch(console.error);
+        } else {
+            initCamera();
+        }
+    };
+
+    function initCamera() {
+        navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+        }).then(stream => {
+            video.srcObject = stream;
+            document.getElementById('initOverlay').style.display = 'none';
+            video.onloadedmetadata = () => { 
+                connect(); 
+                captureAndSend(); 
+            };
+        });
+    }
+  </script>
 </body>
 </html>

@@ -10,13 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 const (
 	Port         = ":3000"
-	OutputDir    = "../data/raw_frames"
+	BaseDataDir  = "../data"
 	MaxQueueSize = 10
 	WorkerCount  = 4
 )
@@ -28,6 +29,7 @@ type Frame struct {
 	Pitch     float32
 	Roll      float32
 	Yaw       float32
+	Dir       string // Tells the worker which folder to save to
 }
 
 var (
@@ -44,7 +46,7 @@ var (
 )
 
 func main() {
-	if err := os.MkdirAll(OutputDir, 0755); err != nil {
+	if err := os.MkdirAll(BaseDataDir, 0755); err != nil {
 		log.Fatalf("Directory creation failed: %v", err)
 	}
 
@@ -72,10 +74,35 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 	defer conn.Close()
 	log.Printf("[GO RELAY] Phone connected: %s", conn.RemoteAddr().String())
 
+	var currentSessionDir string
+
 	for {
 		messageType, reader, err := conn.NextReader()
-		if err != nil || messageType != websocket.BinaryMessage {
+		if err != nil {
 			break
+		}
+
+		// Handle Control Commands (Start/Stop)
+		if messageType == websocket.TextMessage {
+			cmdBuf := make([]byte, 16)
+			n, _ := reader.Read(cmdBuf)
+			cmd := string(cmdBuf[:n])
+
+			if cmd == "START" {
+				sessionName := fmt.Sprintf("session_%d", time.Now().Unix())
+				currentSessionDir = filepath.Join(BaseDataDir, sessionName)
+				os.MkdirAll(currentSessionDir, 0755)
+				log.Printf("[GO RELAY] Started new session: %s", sessionName)
+			} else if cmd == "STOP" {
+				log.Printf("[GO RELAY] Stopped session.")
+				currentSessionDir = ""
+			}
+			continue
+		}
+
+		// Handle Binary Image Frames
+		if messageType != websocket.BinaryMessage || currentSessionDir == "" {
+			continue
 		}
 
 		// 1. Read the 32-byte Header
@@ -104,7 +131,10 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 
 		indexLock.Lock()
 		frameIndex++
-		f := Frame{Data: buf, Timestamp: ts, Index: frameIndex, Pitch: pitch, Roll: roll, Yaw: yaw}
+		f := Frame{
+			Data: buf, Timestamp: ts, Index: frameIndex,
+			Pitch: pitch, Roll: roll, Yaw: yaw, Dir: currentSessionDir,
+		}
 		indexLock.Unlock()
 
 		select {
@@ -117,8 +147,7 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 
 func diskWorker(id int, ch <-chan Frame) {
 	for f := range ch {
-		// Example filename: frame_1720700000_000001_P12.5_R-2.1_Y90.0.jpg
-		filename := filepath.Join(OutputDir, fmt.Sprintf("frame_%d_%06d_P%.1f_R%.1f_Y%.1f.jpg",
+		filename := filepath.Join(f.Dir, fmt.Sprintf("frame_%d_%06d_P%.1f_R%.1f_Y%.1f.jpg",
 			f.Timestamp, f.Index, f.Pitch, f.Roll, f.Yaw))
 		_ = os.WriteFile(filename, f.Data, 0644)
 		framePool.Put(f.Data)
