@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#0A0A0F] text-slate-100 antialiased font-sans overflow-x-hidden;
+  }
+}
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(20, 20, 31, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-panel-glow {
+  background: rgba(20, 20, 31, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 25px rgba(99, 102, 241, 0.1);
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(20, 20, 31, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.6);
+}
+
+/* Glowing Neon Texts */
+.neon-text-blue {
+  text-shadow: 0 0 10px rgba(6, 182, 212, 0.4);
+}
+
+.neon-text-indigo {
+  text-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
+}
+
+/* Custom Telemetry Grid Animation */
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.2);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 4s infinite ease-in-out;
+}
