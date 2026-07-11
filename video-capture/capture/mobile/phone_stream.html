@@ -135,6 +135,7 @@
   <script>
     const PC_IP = '10.91.53.25'; 
     const WS_PORT = 3000;
+    let STREAM_WIDTH = 640; // Default resolution, dynamically configured by server handshake
     
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -173,6 +174,19 @@
         statusEl.textContent = 'Server Ready';
         statusEl.style.background = 'rgba(52, 199, 89, 0.4)';
         recordBtn.disabled = false;
+      };
+      ws.onmessage = (event) => {
+        try {
+          const config = JSON.parse(event.data);
+          if (config.suggested_width) {
+            STREAM_WIDTH = config.suggested_width;
+            statusEl.textContent = `Server Ready (${config.hardware_acceleration})`;
+            statusEl.style.background = 'rgba(52, 199, 89, 0.6)';
+            console.log(`[CLIENT] Dynamic resolution updated to ${STREAM_WIDTH}px (Server Acc: ${config.hardware_acceleration})`);
+          }
+        } catch (e) {
+          // Skip binary data or non-JSON signals
+        }
       };
       ws.onclose = () => { 
         statusEl.textContent = 'Disconnected';
@@ -225,8 +239,9 @@
       }
 
       if (isRecording) {
-          // Force network resolution to 640px wide to maintain speed, calculate height from aspect ratio
-          const w = 640; 
+          // Stream at high resolution for high-accuracy COLMAP reconstruction.
+          // Note: NPU inference models (YOLO/Depth) auto-resize inputs internally.
+          const w = STREAM_WIDTH; 
           const h = Math.round((video.videoHeight / video.videoWidth) * w);
           
           if (canvas.width !== w || canvas.height !== h) {

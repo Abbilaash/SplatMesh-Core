@@ -1,2 +1,5 @@
 video-capture/capture/desktop/data/*
 *.exe
+colmap_test_run/
+**/__pycache__/
+splatmesh_mobile/
