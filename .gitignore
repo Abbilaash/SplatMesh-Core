@@ -1,4 +1,5 @@
 video-capture/capture/desktop/data/*
+video-capture/keyframes_output/
 *.exe
 colmap_test_run/
 **/__pycache__/
