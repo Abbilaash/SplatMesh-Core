@@ -16,16 +16,30 @@
     #ui-layer {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       z-index: 10; display: flex; flex-direction: column; justify-content: space-between;
-      pointer-events: none; /* Let clicks pass through to video if needed */
+      pointer-events: none;
     }
     .top-bar {
-      padding: 20px; display: flex; justify-content: space-between;
+      padding: 20px; display: flex; justify-content: space-between; align-items: flex-start;
       background: linear-gradient(rgba(0,0,0,0.7), transparent);
     }
     #status {
       background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 20px; font-size: 14px;
       backdrop-filter: blur(5px);
     }
+    
+    /* New Stats Panel for IMU and Frames */
+    #statsPanel {
+      background: rgba(0,0,0,0.5); padding: 10px 12px; border-radius: 12px; 
+      font-size: 13px; font-family: monospace; text-align: right; backdrop-filter: blur(5px);
+      display: none; /* Hidden until recording starts */
+    }
+    #frameCount {
+      color: #ff3b30; font-family: -apple-system, sans-serif; font-weight: bold; 
+      margin-bottom: 6px; font-size: 14px;
+    }
+    .imu-row { color: #a1a1aa; margin-top: 2px; }
+    .imu-val { color: #fff; display: inline-block; width: 45px; }
+
     .bottom-bar {
       padding: 30px; display: flex; justify-content: center; align-items: center;
       background: linear-gradient(transparent, rgba(0,0,0,0.8)); pointer-events: auto;
@@ -51,20 +65,25 @@
 </head>
 <body>
 
-  <!-- Initial Permissions Overlay -->
   <div id="initOverlay">
     <button id="startCameraBtn">Enable Camera & Sensors</button>
   </div>
 
-  <!-- Video Feed -->
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
-  <!-- UI Overlay -->
   <div id="ui-layer">
     <div class="top-bar">
       <div id="status">Disconnected</div>
-      <div id="frameCount" style="display:none; background: rgba(255,0,0,0.2); padding: 6px 12px; border-radius: 20px; font-size: 14px;">0 frames</div>
+      
+      <!-- Stats Panel added to top right -->
+      <div id="statsPanel">
+        <div id="frameCount">0 frames</div>
+        <div class="imu-row">P: <span class="imu-val" id="pitchUI">0.0</span>&deg;</div>
+        <div class="imu-row">R: <span class="imu-val" id="rollUI">0.0</span>&deg;</div>
+        <div class="imu-row">Y: <span class="imu-val" id="yawUI">0.0</span>&deg;</div>
+      </div>
+      
     </div>
     <div class="bottom-bar">
       <button id="recordBtn" disabled></button>
@@ -80,7 +99,12 @@
     const ctx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
     const recordBtn = document.getElementById('recordBtn');
+    
+    const statsPanel = document.getElementById('statsPanel');
     const frameCountEl = document.getElementById('frameCount');
+    const pitchUI = document.getElementById('pitchUI');
+    const rollUI = document.getElementById('rollUI');
+    const yawUI = document.getElementById('yawUI');
     
     let ws;
     let isRecording = false;
@@ -92,6 +116,13 @@
         curPitch = e.beta || 0;
         curRoll = e.gamma || 0;
         curYaw = e.alpha || 0;
+
+        // Only update the DOM if we are actively recording to save battery/CPU
+        if (isRecording) {
+            pitchUI.textContent = curPitch.toFixed(1);
+            rollUI.textContent = curRoll.toFixed(1);
+            yawUI.textContent = curYaw.toFixed(1);
+        }
     });
 
     function connect() {
@@ -106,7 +137,7 @@
         statusEl.textContent = 'Disconnected';
         statusEl.style.background = 'rgba(255, 59, 48, 0.4)';
         recordBtn.disabled = true;
-        if(isRecording) toggleRecording(); // Auto-stop if connection drops
+        if(isRecording) toggleRecording(); 
         setTimeout(connect, 2000); 
       };
     }
@@ -119,15 +150,16 @@
             ws.send("START");
             isRecording = true;
             recordBtn.classList.add('recording');
+            
             framesSent = 0;
-            frameCountEl.style.display = 'block';
             frameCountEl.textContent = '0 frames';
+            statsPanel.style.display = 'block'; // Show panel
         } else {
             // Stop
             ws.send("STOP");
             isRecording = false;
             recordBtn.classList.remove('recording');
-            frameCountEl.style.display = 'none';
+            statsPanel.style.display = 'none'; // Hide panel
         }
     }
 
@@ -147,7 +179,6 @@
         return;
       }
 
-      // Only process and send if we are actively recording
       if (isRecording) {
           const w = Math.round(video.videoWidth * 0.5);
           const h = Math.round(video.videoHeight * 0.5);
@@ -171,7 +202,6 @@
       requestAnimationFrame(captureAndSend);
     }
 
-    // Initialization (handles iOS strict permission models)
     document.getElementById('startCameraBtn').onclick = () => {
         if (typeof DeviceOrientationEvent.requestPermission === 'function') {
             DeviceOrientationEvent.requestPermission()
