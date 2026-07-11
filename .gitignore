@@ -3,3 +3,6 @@ video-capture/capture/desktop/data/*
 colmap_test_run/
 **/__pycache__/
 splatmesh_mobile/
+test/qai_env/*
+test/images/*
+test/*
