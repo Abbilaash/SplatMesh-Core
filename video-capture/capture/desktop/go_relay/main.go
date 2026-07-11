@@ -1,13 +1,15 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -23,6 +25,9 @@ type Frame struct {
 	Data      []byte
 	Timestamp int64
 	Index     int
+	Pitch     float32
+	Roll      float32
+	Yaw       float32
 }
 
 var (
@@ -48,13 +53,9 @@ func main() {
 		go diskWorker(i, frameChannel)
 	}
 
-	// Route 1: WebSocket
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleConnection(w, r, frameChannel)
 	})
-
-	// Route 2: Serve HTML (Assuming phone_stream.html is in the folder one level up: ../mobile)
-	// If phone_stream.html is in the same folder as this code, change "." to "."
 	http.Handle("/", http.FileServer(http.Dir("../mobile")))
 
 	fmt.Printf("[GO RELAY] Running on http://10.91.53.25%s\n", Port)
@@ -73,13 +74,22 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 
 	for {
 		messageType, reader, err := conn.NextReader()
-		if err != nil {
+		if err != nil || messageType != websocket.BinaryMessage {
 			break
 		}
-		if messageType != websocket.BinaryMessage {
+
+		// 1. Read the 32-byte Header
+		headerBuf := make([]byte, 32)
+		if _, err := io.ReadFull(reader, headerBuf); err != nil {
 			continue
 		}
 
+		ts := int64(binary.LittleEndian.Uint64(headerBuf[0:8]))
+		pitch := math.Float32frombits(binary.LittleEndian.Uint32(headerBuf[8:12]))
+		roll := math.Float32frombits(binary.LittleEndian.Uint32(headerBuf[12:16]))
+		yaw := math.Float32frombits(binary.LittleEndian.Uint32(headerBuf[16:20]))
+
+		// 2. Read the remaining JPEG data
 		buf := framePool.Get().([]byte)[:0]
 		tmp := make([]byte, 4096)
 		for {
@@ -94,7 +104,7 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 
 		indexLock.Lock()
 		frameIndex++
-		f := Frame{Data: buf, Timestamp: time.Now().UnixMilli(), Index: frameIndex}
+		f := Frame{Data: buf, Timestamp: ts, Index: frameIndex, Pitch: pitch, Roll: roll, Yaw: yaw}
 		indexLock.Unlock()
 
 		select {
@@ -107,7 +117,9 @@ func handleConnection(w http.ResponseWriter, r *http.Request, ch chan<- Frame) {
 
 func diskWorker(id int, ch <-chan Frame) {
 	for f := range ch {
-		filename := filepath.Join(OutputDir, fmt.Sprintf("frame_%d_%06d.jpg", f.Timestamp, f.Index))
+		// Example filename: frame_1720700000_000001_P12.5_R-2.1_Y90.0.jpg
+		filename := filepath.Join(OutputDir, fmt.Sprintf("frame_%d_%06d_P%.1f_R%.1f_Y%.1f.jpg",
+			f.Timestamp, f.Index, f.Pitch, f.Roll, f.Yaw))
 		_ = os.WriteFile(filename, f.Data, 0644)
 		framePool.Put(f.Data)
 	}
