@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 import os
 import time
+import json
+import re
 import struct
 import asyncio
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from aiohttp import web
 import aiohttp
@@ -15,6 +21,11 @@ os.chdir(script_dir)
 # Resolve absolute paths relative to python_relay script location
 BASE_DATA_DIR = (script_dir / ".." / "data").resolve()
 MOBILE_DIR = (script_dir / ".." / ".." / "mobile").resolve()
+KEYFRAME_SCRIPT = (script_dir / ".." / ".." / ".." / "extract_keyframes.py").resolve()
+
+KEYFRAME_FPS = os.environ.get("SPLATMESH_KEYFRAME_FPS", "4")
+KEYFRAME_BLUR_THRESHOLD = os.environ.get("SPLATMESH_KEYFRAME_BLUR_THRESHOLD", "100")
+KEYFRAME_SIM_THRESHOLD = os.environ.get("SPLATMESH_KEYFRAME_SIM_THRESHOLD", "0.92")
 
 BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +69,143 @@ def detect_hardware():
 
     return hardware, suggested_width
 
+def _frame_sort_key(path: Path):
+    match = re.search(r"_(\d{6})_P", path.name)
+    if match:
+        return (0, int(match.group(1)))
+    return (1, path.name)
+
+def _build_session_video(images_dir: Path, video_path: Path) -> bool:
+    image_files = sorted(
+        [p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}],
+        key=_frame_sort_key,
+    )
+    if not image_files:
+        print("[SERVER] No captured images found. Skipping keyframe extraction.")
+        return False
+
+    ffmpeg_exe = shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        print("[SERVER] FFmpeg not available on PATH. Skipping keyframe extraction.")
+        return False
+
+    with tempfile.TemporaryDirectory(prefix="relay_seq_", dir=str(images_dir.parent)) as seq_dir:
+        seq_path = Path(seq_dir)
+        for idx, source in enumerate(image_files, start=1):
+            destination = seq_path / f"img_{idx:06d}{source.suffix.lower()}"
+            try:
+                os.link(source, destination)
+            except OSError:
+                shutil.copy2(source, destination)
+
+        first_suffix = image_files[0].suffix.lower()
+        pattern = seq_path / f"img_%06d{first_suffix}"
+        command = [
+            ffmpeg_exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-framerate",
+            "30",
+            "-i",
+            str(pattern),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(video_path),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode != 0:
+            print(f"[SERVER] Failed to create session video for keyframe extraction: {completed.stderr.strip()}")
+            return False
+
+    return video_path.exists()
+
+def _replace_images_with_keyframes(images_dir: Path, keyframes_dir: Path, manifest_path: Path) -> bool:
+    selected_files = sorted(
+        [
+            p for p in keyframes_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        ]
+    )
+    if not selected_files:
+        return False
+
+    backup_dir = images_dir.parent / "images_raw"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    images_dir.rename(backup_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, source in enumerate(selected_files, start=1):
+        destination = images_dir / f"keyframe_{idx:06d}{source.suffix.lower()}"
+        shutil.move(str(source), str(destination))
+
+    if manifest_path.exists():
+        shutil.move(str(manifest_path), str(images_dir.parent / "keyframes.json"))
+
+    shutil.rmtree(keyframes_dir, ignore_errors=True)
+    print(f"[SERVER] Replaced raw frames with {len(selected_files)} selected keyframes for COLMAP.")
+    return True
+
+def prepare_keyframes_for_colmap(session_dir: Path) -> None:
+    images_dir = session_dir / "images"
+    if not images_dir.exists():
+        print("[SERVER] Images directory missing. Skipping keyframe preparation.")
+        return
+
+    if not KEYFRAME_SCRIPT.exists():
+        print(f"[SERVER] Keyframe script not found at {KEYFRAME_SCRIPT}. Skipping keyframe preparation.")
+        return
+
+    video_path = session_dir / "session_capture.mp4"
+    if not _build_session_video(images_dir, video_path):
+        return
+
+    keyframes_dir = session_dir / "images_keyframes"
+    if keyframes_dir.exists():
+        shutil.rmtree(keyframes_dir)
+
+    command = [
+        sys.executable,
+        str(KEYFRAME_SCRIPT),
+        "--video-path",
+        str(video_path),
+        "--output-dir",
+        str(keyframes_dir),
+        "--fps",
+        KEYFRAME_FPS,
+        "--blur-threshold",
+        KEYFRAME_BLUR_THRESHOLD,
+        "--keyframe-similarity-threshold",
+        KEYFRAME_SIM_THRESHOLD,
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        print(f"[SERVER] Keyframe extraction failed; continuing with raw frames.\n{completed.stderr.strip()}")
+        return
+
+    manifest_path = keyframes_dir / "keyframes.json"
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            selected_count = int(payload.get("selected_count", 0))
+            print(f"[SERVER] Keyframe extraction completed. Selected {selected_count} frames.")
+        except Exception:
+            print("[SERVER] Keyframe extraction completed.")
+
+    if not _replace_images_with_keyframes(images_dir, keyframes_dir, manifest_path):
+        print("[SERVER] No keyframes selected; keeping original frames for COLMAP.")
+
+def run_reconstruction_pipeline(session_dir: Path) -> None:
+    try:
+        prepare_keyframes_for_colmap(session_dir)
+    except Exception as exc:
+        print(f"[SERVER] Keyframe preparation failed unexpectedly: {exc}")
+    run_colmap_reconstruction(session_dir)
+
 async def handle_websocket(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -96,8 +244,8 @@ async def handle_websocket(request):
                     
                     if session_state["current_dir"] and session_state["current_dir"].exists():
                         session_dir = session_state["current_dir"]
-                        # Run COLMAP reconstruction asynchronously in a background thread to prevent blocking
-                        loop.run_in_executor(None, run_colmap_reconstruction, session_dir)
+                        # Build keyframes from captured frames first, then run COLMAP in a worker thread.
+                        loop.run_in_executor(None, run_reconstruction_pipeline, session_dir)
                     
                     session_state["current_dir"] = None
 
