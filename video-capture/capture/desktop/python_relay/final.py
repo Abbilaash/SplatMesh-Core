@@ -150,12 +150,15 @@ async def handle_websocket(request):
                 try:
                     header = data[:32]
                     ts = struct.unpack('<q', header[0:8])[0]
+                    pitch = struct.unpack('<f', header[8:12])[0]
+                    roll = struct.unpack('<f', header[12:16])[0]
+                    yaw = struct.unpack('<f', header[16:20])[0]
                     
                     image_data = data[32:]
                     session_state["frame_index"] += 1
                     idx = session_state["frame_index"]
 
-                    filename = f"frame_{ts}_{idx:06d}.jpg"
+                    filename = f"frame_{ts}_{idx:06d}_P{pitch:.1f}_R{roll:.1f}_Y{yaw:.1f}.jpg"
                     filepath = session_state["current_dir"] / "images" / filename
 
                     # THE FIX: Awaiting the executor creates natural network backpressure!
