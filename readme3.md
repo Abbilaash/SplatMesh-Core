@@ -37,9 +37,9 @@ Phone records video
 
 ---
 
-### MODEL 1 — YOLOv8-Nano-Seg
-**Runs on:** Snapdragon X Elite Laptop → Hexagon NPU (via QNN)
-**Gets it from:** Qualcomm AI Hub
+### MODEL 1 — YOLOv8-Nano-Seg ONNX
+**Runs on:** Snapdragon X Elite Laptop → Hexagon NPU (via QNN / ONNX Runtime)
+**Gets it from:** Qualcomm AI Hub or an ONNX export you generate yourself
 
 **What it does:** Detects and segments moving people and objects in every incoming camera frame. The laptop blacks out those pixels so only clean static geometry flows into the reconstruction pipeline.
 
@@ -55,20 +55,39 @@ Option A — Qualcomm AI Hub (recommended, fastest):
 6. Place in: laptop/2_npu_pipeline/models/yolov8n_seg_qnn/
 ```
 
-Option B — Export yourself (if you want seg variant):
+Option B — Export yourself (if you want the ONNX runtime path in git):
 ```bash
-# Run on the Snapdragon X Elite laptop
-pip install ultralytics qai-hub-models
+# Run on a machine that can export the model
+pip install ultralytics onnx onnxruntime onnxslim
 
-# Export YOLOv8n-seg to QNN
+# Export YOLOv8n-seg to ONNX
 python -c "
 from ultralytics import YOLO
 model = YOLO('yolov8n-seg.pt')
-model.export(format='qnn', device='cpu')
+model.export(format='onnx', opset=12, simplify=True)
 print('Export complete')
 "
-# Output: yolov8n-seg_qnn/ folder with .bin and .serialized.bin
+# Output: yolov8n-seg.onnx
 ```
+
+**Runtime note:** The edge script loads `yolov8n-seg.onnx` through ONNX Runtime and will use `QNNExecutionProvider` when it is installed on the Snapdragon X machine.
+
+### Snapdragon X edge install and run
+```bash
+# Create or activate a Python environment on the Snapdragon X PC
+python -m venv .venv
+.venv\Scripts\activate
+
+# Install only the runtime dependencies needed on the target machine
+pip install -r workspace/requirements-edge.txt
+
+# Make sure yolov8n-seg.onnx is present next to seg_mask_frame.py
+
+# Run the edge mask step
+python workspace/seg_mask_frame.py --source workspace/test.jpeg --out workspace/masked_frame.jpg
+```
+
+If `onnxruntime-qnn` is installed on that machine, the script will try the QNN execution provider first and otherwise fall back to CPU execution automatically.
 
 **YouTube reference:**
 - "Qualcomm AI Hub YOLOv8 deployment" — search on YouTube
@@ -222,10 +241,8 @@ python -c "import torch; print('GPU:', torch.cuda.get_device_name(0))"
 ### Step 4 — Install all laptop dependencies
 
 ```bash
-pip install ultralytics
 pip install transformers accelerate
 pip install onnxruntime
-pip install onnxruntime-qnn
 pip install opencv-python
 pip install numpy
 pip install websockets
@@ -236,9 +253,11 @@ pip install qai-hub-models
 pip install huggingface-hub
 ```
 
+If you plan to use Qualcomm's NPU runtime on the Snapdragon X machine, install the matching QNN-enabled ONNX Runtime package for that device. The same `seg_mask_frame.py` entrypoint will then use that provider automatically when available.
+
 All in one line:
 ```bash
-pip install ultralytics transformers accelerate onnxruntime onnxruntime-qnn opencv-python numpy websockets pyserial flask flask-cors nerfstudio qai-hub-models huggingface-hub
+pip install transformers accelerate onnxruntime opencv-python numpy websockets pyserial flask flask-cors nerfstudio qai-hub-models huggingface-hub
 ```
 
 ### Step 5 — Install external tools
@@ -905,7 +924,7 @@ void loop() {
 SplatMesh Core — YOLOv8-Nano-Seg Person Masker
 
 On Snapdragon X Elite: uses QNN Execution Provider → Hexagon NPU
-On any CUDA GPU:       uses ultralytics directly → GPU
+On any CUDA GPU:       runs through ONNX Runtime with a compatible provider or CPU fallback
 Falls back to CPU if neither available.
 """
 
@@ -957,24 +976,23 @@ def _load_qnn():
     return session, "qnn"
 
 
-def _load_ultralytics():
-    """Load YOLOv8 via ultralytics (CUDA GPU or CPU)."""
-    from ultralytics import YOLO
-    model = YOLO("yolov8n-seg.pt")
-    device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
-    print(f"[YOLO] Loaded via ultralytics on {device}")
-    return model, device
+def _load_cpu():
+    """Load YOLOv8 through ONNX Runtime CPU fallback."""
+    import onnxruntime as ort
+    session = ort.InferenceSession("yolov8n-seg.onnx", providers=["CPUExecutionProvider"])
+    print("[YOLO] Loaded via ONNX Runtime CPU fallback")
+    return session, "cpu"
 
 
 class YOLOMasker:
     def __init__(self):
-        # Try QNN first (NPU), fall back to ultralytics
+        # Try QNN first (NPU), fall back to CPU ONNX Runtime
         try:
             self._session, self._backend = _load_qnn()
             self._use_qnn = True
         except Exception as e:
-            print(f"[YOLO] QNN not available ({e}) — falling back to ultralytics")
-            self._model, self._backend = _load_ultralytics()
+            print(f"[YOLO] QNN not available ({e}) — falling back to CPU ONNX Runtime")
+            self._session, self._backend = _load_cpu()
             self._use_qnn = False
 
         # Warm-up
@@ -987,31 +1005,10 @@ class YOLOMasker:
         Args:
             frame: BGR numpy array
         Returns:
-            (masked_frame, n_objects_masked, boxes_list)
-            masked_frame: same size as input, moving objects blacked out
-        """
-        if self._use_qnn:
+        return self._infer_qnn(frame) if self._use_qnn else self._infer_cpu(frame)
             return self._infer_qnn(frame)
-        else:
-            return self._infer_ultralytics(frame)
-
-    def _infer_ultralytics(self, frame):
-        results = self._model(
-            frame, conf=CONF_THRESH, iou=IOU_THRESH, verbose=False
-        )[0]
-        masked = frame.copy()
-        count  = 0
-        boxes  = []
-
-        if results.masks is not None and results.boxes is not None:
-            for mask_t, box in zip(results.masks.data, results.boxes):
-                cls = int(box.cls[0])
-                if cls not in MASK_CLASSES:
-                    continue
-                mask_np = mask_t.cpu().numpy()
-                mask_rs = cv2.resize(mask_np, (frame.shape[1], frame.shape[0]))
-                masked[mask_rs > 0.5] = 0
-                count += 1
+    def _infer_cpu(self, frame):
+        return self._infer_qnn(frame)
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 boxes.append((x1, y1, x2, y2, MASK_CLASSES[cls]))
 
@@ -1075,23 +1072,11 @@ class YOLOMasker:
         ])
 
 
-# ── QNN Export helper (run once on Snapdragon laptop) ───────────────────────
+# ── ONNX Export helper (run once on a machine with Ultralytics installed) ───
 def export_to_qnn_aihub():
-    """Export YOLOv8n-seg to QNN format via Qualcomm AI Hub."""
-    try:
-        import qai_hub as hub
-        model = __import__("ultralytics").YOLO("yolov8n-seg.pt")
-
-        print("[YOLO] Submitting to Qualcomm AI Hub for QNN compilation...")
-        compile_job = hub.submit_compile_job(
-            model    = model.export(format="onnx"),
-            device   = hub.Device("Snapdragon X Elite CRD"),
-            options  = "--target_runtime qnn_lib_aarch64_android"
-        )
-        print(f"[YOLO] Job ID: {compile_job.job_id}")
-        print("[YOLO] Check status at https://aihub.qualcomm.com/jobs")
-    except ImportError:
-        print("[YOLO] qai_hub not installed. Run: pip install qai-hub")
+    """Print the one-time export step for the deployable ONNX model."""
+    print("[YOLO] Export your segmentation checkpoint to ONNX before deploying to Snapdragon X")
+    print("[YOLO] Example: yolo export model=yolov8n-seg.pt format=onnx opset=12 simplify=True")
 
 
 if __name__ == "__main__":
@@ -2515,7 +2500,7 @@ try:
     import onnxruntime as ort
     print(f"✅ onnxruntime {ort.__version__}")
 except ImportError:
-    print("❌ onnxruntime not installed — pip install onnxruntime-qnn")
+    print("❌ onnxruntime not installed — pip install onnxruntime or onnxruntime-qnn")
     exit(1)
 
 # List all available providers
