@@ -6,6 +6,7 @@ from pathlib import Path
 
 def get_colmap_exe():
     """Find colmap executable. On Windows, we must use COLMAP.bat to load Qt plugins for the GPU."""
+    # Always prefer the batch file on Windows to prevent Qt environment errors
     bat_path = Path("C:/colmap/COLMAP.bat")
     if bat_path.exists():
         return bat_path
@@ -14,6 +15,7 @@ def get_colmap_exe():
     if not colmap_path:
         fallback_exe = Path("C:/colmap/bin/colmap.exe")
         if fallback_exe.exists():
+            # Temporarily add fallback to environment PATH
             os.environ["PATH"] = str(fallback_exe.parent) + os.path.pathsep + os.environ.get("PATH", "")
             colmap_path = shutil.which("colmap")
     return colmap_path
@@ -55,43 +57,36 @@ def run_colmap_reconstruction(session_dir: Path) -> bool:
     sparse_dir.mkdir(parents=True, exist_ok=True)
 
     with open(log_path, "w", encoding="utf-8") as log_file:
-        
-        # 1. Feature Extraction (Optimized for X Elite multi-core CPU)
+        # 1. Feature Extraction (GPU Enabled)
         cmd_extract = [
             str(colmap_exe), "feature_extractor",
             "--database_path", str(db_path),
             "--image_path", str(images_dir),
             "--ImageReader.single_camera", "1",
-            "--SiftExtraction.use_gpu", "0", 
-            "--SiftExtraction.num_threads", "12", 
-            "--SiftExtraction.max_num_features", "2048" 
+            "--FeatureExtraction.use_gpu", "1"
         ]
-        print("[COLMAP WRAPPER] Running Feature Extractor (Optimized Multi-Core CPU)...")
+        print("[COLMAP WRAPPER] Running Feature Extractor (GPU)...")
         if not run_command(cmd_extract, log_file):
             print("[COLMAP WRAPPER] [ERROR] Feature extraction failed. Check log for details.")
             return False
 
-        # 2. Sequential Feature Matching (Optimized Overlap)
+        # 2. Sequential Feature Matching (GPU Enabled)
         cmd_match = [
             str(colmap_exe), "sequential_matcher",
             "--database_path", str(db_path),
-            "--SiftMatching.use_gpu", "0",
-            "--SiftMatching.num_threads", "12",
-            "--SequentialMatching.overlap", "5" 
+            "--FeatureMatching.use_gpu", "1"
         ]
-        print("[COLMAP WRAPPER] Running Feature Matcher (Optimized Sequential)...")
+        print("[COLMAP WRAPPER] Running Feature Matcher (GPU)...")
         if not run_command(cmd_match, log_file):
             print("[COLMAP WRAPPER] [ERROR] Feature matching failed. Check log for details.")
             return False
 
-        # 3. Sparse Reconstruction / Mapping (Optimized Bundle Adjustment)
+        # 3. Sparse Reconstruction / Mapping
         cmd_map = [
             str(colmap_exe), "mapper",
             "--database_path", str(db_path),
             "--image_path", str(images_dir),
-            "--output_path", str(sparse_dir),
-            "--Mapper.num_threads", "12",
-            "--Mapper.ba_local_max_num_iterations", "15" 
+            "--output_path", str(sparse_dir)
         ]
         print("[COLMAP WRAPPER] Running Incremental Mapper...")
         if not run_command(cmd_map, log_file):
