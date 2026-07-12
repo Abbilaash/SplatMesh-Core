@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>SplatMesh Scanner</title>
+  <style>
+    :root {
+      /* Handle iPhone notches and Android cutouts */
+      --safe-top: max(20px, env(safe-area-inset-top));
+      --safe-bottom: max(30px, env(safe-area-inset-bottom));
+    }
+    body {
+      margin: 0; padding: 0; background: #000; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden; display: flex; flex-direction: column; height: 100vh;
+    }
+    #video {
+      width: 100%; height: 100%; object-fit: contain; position: absolute; z-index: 1;
+      background: #000; /* Keeps the empty space black */
+    }
+    
+    /* 1. The Alignment Grid */
+    #grid-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5;
+      pointer-events: none;
+      background-image: 
+        linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px);
+      background-size: 33.33% 33.33%;
+      display: none; /* Shown only when recording */
+    }
+
+    #ui-layer {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 10; display: flex; flex-direction: column; justify-content: space-between;
+      pointer-events: none;
+    }
+    .top-bar {
+      padding: var(--safe-top) 20px 20px 20px; 
+      display: flex; justify-content: space-between; align-items: flex-start;
+      background: linear-gradient(rgba(0,0,0,0.8), transparent);
+    }
+    #status {
+      background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 20px; font-size: 14px;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      transition: background 0.3s;
+    }
+    
+    #statsPanel {
+      background: rgba(0,0,0,0.5); padding: 10px 12px; border-radius: 12px; 
+      font-size: 13px; font-family: monospace; text-align: right; 
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      display: none;
+    }
+    
+    /* 3. The Pulsing Indicator */
+    #frameCountContainer {
+      display: flex; justify-content: flex-end; align-items: center; margin-bottom: 6px;
+    }
+    .pulse-dot {
+      width: 8px; height: 8px; background-color: #ff3b30; border-radius: 50%;
+      margin-right: 8px;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7); }
+      70% { opacity: 0.5; box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); }
+      100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); }
+    }
+    
+    #frameCount { color: #fff; font-family: -apple-system, sans-serif; font-weight: bold; font-size: 14px; }
+    .imu-row { color: #a1a1aa; margin-top: 2px; }
+    .imu-val { color: #fff; display: inline-block; width: 45px; }
+
+    .bottom-bar {
+      padding: 30px 30px var(--safe-bottom) 30px; 
+      display: flex; justify-content: center; align-items: center;
+      background: linear-gradient(transparent, rgba(0,0,0,0.8)); pointer-events: auto;
+    }
+    #recordBtn {
+      width: 76px; height: 76px; border-radius: 50%; background: #ff3b30;
+      border: 4px solid #fff; outline: none; cursor: pointer; transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    #recordBtn:active { transform: scale(0.9); }
+    #recordBtn.recording {
+      border-radius: 20px; background: #ff3b30; transform: scale(0.8);
+      border-width: 6px;
+    }
+    
+    #initOverlay {
+      position: absolute; z-index: 20; top: 0; left: 0; width: 100%; height: 100%;
+      background: #09090b; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: auto;
+    }
+    #initOverlay h2 { margin-bottom: 30px; font-weight: 600; letter-spacing: -0.5px; }
+    #startCameraBtn {
+      padding: 16px 32px; font-size: 18px; font-weight: 600; background: #007aff; color: #fff;
+      border: none; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4);
+    }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+
+  <div id="initOverlay">
+    <h2>SplatMesh Capture</h2>
+    <button id="startCameraBtn">Enable Camera & Sensors</button>
+  </div>
+
+  <video id="video" autoplay playsinline muted></video>
+  <div id="grid-overlay"></div>
+  <canvas id="canvas"></canvas>
+
+  <div id="ui-layer">
+    <div class="top-bar">
+      <div id="status">Connecting...</div>
+      
+      <div id="statsPanel">
+        <div id="frameCountContainer">
+          <div class="pulse-dot"></div>
+          <div id="frameCount">0 frames</div>
+        </div>
+        <div class="imu-row">P: <span class="imu-val" id="pitchUI">0.0</span>&deg;</div>
+        <div class="imu-row">R: <span class="imu-val" id="rollUI">0.0</span>&deg;</div>
+        <div class="imu-row">Y: <span class="imu-val" id="yawUI">0.0</span>&deg;</div>
+      </div>
+      
+    </div>
+    <div class="bottom-bar">
+      <button id="recordBtn" disabled></button>
+    </div>
+  </div>
+
+  <script>
+    const PC_IP = '10.91.53.25'; 
+    const WS_PORT = 3000;
+    let STREAM_WIDTH = 640; // Default resolution, dynamically configured by server handshake
+    
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const recordBtn = document.getElementById('recordBtn');
+    
+    const statsPanel = document.getElementById('statsPanel');
+    const gridOverlay = document.getElementById('grid-overlay');
+    const frameCountEl = document.getElementById('frameCount');
+    const pitchUI = document.getElementById('pitchUI');
+    const rollUI = document.getElementById('rollUI');
+    const yawUI = document.getElementById('yawUI');
+    
+    let ws;
+    let isRecording = false;
+    let framesSent = 0;
+    
+    let curPitch = 0, curRoll = 0, curYaw = 0;
+    window.addEventListener('deviceorientation', (e) => {
+        curPitch = e.beta || 0;
+        curRoll = e.gamma || 0;
+        curYaw = e.alpha || 0;
+
+        if (isRecording) {
+            pitchUI.textContent = curPitch.toFixed(1);
+            rollUI.textContent = curRoll.toFixed(1);
+            yawUI.textContent = curYaw.toFixed(1);
+        }
+    });
+
+    function connect() {
+      ws = new WebSocket(`ws://${PC_IP}:${WS_PORT}/ws`);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        statusEl.textContent = 'Server Ready';
+        statusEl.style.background = 'rgba(52, 199, 89, 0.4)';
+        recordBtn.disabled = false;
+      };
+      ws.onmessage = (event) => {
+        try {
+          const config = JSON.parse(event.data);
+          if (config.suggested_width) {
+            STREAM_WIDTH = config.suggested_width;
+            statusEl.textContent = `Server Ready (${config.hardware_acceleration})`;
+            statusEl.style.background = 'rgba(52, 199, 89, 0.6)';
+            console.log(`[CLIENT] Dynamic resolution updated to ${STREAM_WIDTH}px (Server Acc: ${config.hardware_acceleration})`);
+          }
+        } catch (e) {
+          // Skip binary data or non-JSON signals
+        }
+      };
+      ws.onclose = () => { 
+        statusEl.textContent = 'Disconnected';
+        statusEl.style.background = 'rgba(255, 59, 48, 0.4)';
+        recordBtn.disabled = true;
+        if(isRecording) toggleRecording(); 
+        setTimeout(connect, 2000); 
+      };
+    }
+
+    recordBtn.onclick = toggleRecording;
+
+    function toggleRecording() {
+        if (navigator.vibrate) {
+            navigator.vibrate(isRecording ? [50, 50, 50] : 50);
+        }
+
+        if (!isRecording) {
+            ws.send("START");
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            
+            framesSent = 0;
+            frameCountEl.textContent = '0 frames';
+            statsPanel.style.display = 'block';
+            gridOverlay.style.display = 'block';
+        } else {
+            ws.send("STOP");
+            isRecording = false;
+            recordBtn.classList.remove('recording');
+            statsPanel.style.display = 'none';
+            gridOverlay.style.display = 'none';
+        }
+    }
+
+    function createHeader() {
+        const buffer = new ArrayBuffer(32);
+        const view = new DataView(buffer);
+        view.setBigInt64(0, BigInt(Date.now()), true);
+        view.setFloat32(8, curPitch, true);
+        view.setFloat32(12, curRoll, true);
+        view.setFloat32(16, curYaw, true);
+        return buffer;
+    }
+
+    function captureAndSend() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
+        requestAnimationFrame(captureAndSend);
+        return;
+      }
+
+      if (isRecording) {
+          // Stream at high resolution for high-accuracy COLMAP reconstruction.
+          // Note: NPU inference models (YOLO/Depth) auto-resize inputs internally.
+          const w = STREAM_WIDTH; 
+          const h = Math.round((video.videoHeight / video.videoWidth) * w);
+          
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w; canvas.height = h;
+          }
+
+          ctx.drawImage(video, 0, 0, w, h);
+          
+          canvas.toBlob(blob => {
+            if (blob && ws.readyState === WebSocket.OPEN && isRecording) {
+              const packet = new Blob([createHeader(), blob]);
+              ws.send(packet);
+              
+              framesSent++;
+              if(framesSent % 3 === 0) frameCountEl.textContent = `${framesSent} frames`;
+            }
+          }, 'image/jpeg', 0.85);
+      }
+      
+      requestAnimationFrame(captureAndSend);
+    }
+
+    document.getElementById('startCameraBtn').onclick = () => {
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            DeviceOrientationEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') initCamera();
+                    else alert("Sensors required for 3D tracking.");
+                })
+                .catch(console.error);
+        } else {
+            initCamera();
+        }
+    };
+
+    function initCamera() {
+        // Request standard 1080p to bypass Android digital crop on the main lens
+        navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
+        }).then(stream => {
+            video.srcObject = stream;
+            document.getElementById('initOverlay').style.display = 'none';
+            video.onloadedmetadata = () => { 
+                connect(); 
+                captureAndSend(); 
+            };
+        });
+    }
+  </script>
+</body>
+</html>
