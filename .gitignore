@@ -8,3 +8,6 @@ test/qai_env/*
 test/images/*
 test/*
 temp.py
+video-capture/capture/desktop/python_relay/data/*
+gaussian-splatting/*
+gsplat/*

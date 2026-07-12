@@ -6,6 +6,7 @@
   <title>SplatMesh Scanner</title>
   <style>
     :root {
+      /* Handle iPhone notches and Android cutouts */
       --safe-top: max(20px, env(safe-area-inset-top));
       --safe-bottom: max(30px, env(safe-area-inset-bottom));
     }
@@ -16,8 +17,10 @@
     }
     #video {
       width: 100%; height: 100%; object-fit: contain; position: absolute; z-index: 1;
-      background: #000;
+      background: #000; /* Keeps the empty space black */
     }
+    
+    /* 1. The Alignment Grid */
     #grid-overlay {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5;
       pointer-events: none;
@@ -25,8 +28,9 @@
         linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px),
         linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px);
       background-size: 33.33% 33.33%;
-      display: none; 
+      display: none; /* Shown only when recording */
     }
+
     #ui-layer {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       z-index: 10; display: flex; flex-direction: column; justify-content: space-between;
@@ -42,12 +46,15 @@
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
       transition: background 0.3s;
     }
+    
     #statsPanel {
       background: rgba(0,0,0,0.5); padding: 10px 12px; border-radius: 12px; 
       font-size: 13px; font-family: monospace; text-align: right; 
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
       display: none;
     }
+    
+    /* 3. The Pulsing Indicator */
     #frameCountContainer {
       display: flex; justify-content: flex-end; align-items: center; margin-bottom: 6px;
     }
@@ -61,9 +68,11 @@
       70% { opacity: 0.5; box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); }
       100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); }
     }
+    
     #frameCount { color: #fff; font-family: -apple-system, sans-serif; font-weight: bold; font-size: 14px; }
     .imu-row { color: #a1a1aa; margin-top: 2px; }
     .imu-val { color: #fff; display: inline-block; width: 45px; }
+
     .bottom-bar {
       padding: 30px 30px var(--safe-bottom) 30px; 
       display: flex; justify-content: center; align-items: center;
@@ -79,6 +88,7 @@
       border-radius: 20px; background: #ff3b30; transform: scale(0.8);
       border-width: 6px;
     }
+    
     #initOverlay {
       position: absolute; z-index: 20; top: 0; left: 0; width: 100%; height: 100%;
       background: #09090b; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: auto;
@@ -123,10 +133,9 @@
   </div>
 
   <script>
-    // Make sure this matches your laptop's IP address
-    const PC_IP = '10.91.56.127'; 
+    const PC_IP = '10.91.53.25'; 
     const WS_PORT = 3000;
-    let STREAM_WIDTH = 640; 
+    let STREAM_WIDTH = 640; // Default resolution, dynamically configured by server handshake
     
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -223,46 +232,33 @@
         return buffer;
     }
 
-    let lastCaptureTime = 0;
-
-    function captureAndSend(timestamp) {
+    function captureAndSend() {
       if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) {
         requestAnimationFrame(captureAndSend);
         return;
       }
 
       if (isRecording) {
-          // THROTTLE 1: Frame limit. Wait 125ms between frames (~8 FPS)
-          if (timestamp - lastCaptureTime >= 125) {
-              
-              // THROTTLE 2: Network Circuit Breaker. 
-              // If >500KB is stuck in the WebSocket queue, skip this frame to prevent crashing.
-              if (ws.bufferedAmount > 500000) {
-                  requestAnimationFrame(captureAndSend);
-                  return;
-              }
-
-              lastCaptureTime = timestamp;
-
-              const w = STREAM_WIDTH; 
-              const h = Math.round((video.videoHeight / video.videoWidth) * w);
-              
-              if (canvas.width !== w || canvas.height !== h) {
-                canvas.width = w; canvas.height = h;
-              }
-
-              ctx.drawImage(video, 0, 0, w, h);
-              
-              canvas.toBlob(blob => {
-                if (blob && ws.readyState === WebSocket.OPEN && isRecording) {
-                  const packet = new Blob([createHeader(), blob]);
-                  ws.send(packet);
-                  
-                  framesSent++;
-                  if(framesSent % 3 === 0) frameCountEl.textContent = `${framesSent} frames`;
-                }
-              }, 'image/jpeg', 0.80); // Reduced to 80% quality for smaller network payloads
+          // Stream at high resolution for high-accuracy COLMAP reconstruction.
+          // Note: NPU inference models (YOLO/Depth) auto-resize inputs internally.
+          const w = STREAM_WIDTH; 
+          const h = Math.round((video.videoHeight / video.videoWidth) * w);
+          
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w; canvas.height = h;
           }
+
+          ctx.drawImage(video, 0, 0, w, h);
+          
+          canvas.toBlob(blob => {
+            if (blob && ws.readyState === WebSocket.OPEN && isRecording) {
+              const packet = new Blob([createHeader(), blob]);
+              ws.send(packet);
+              
+              framesSent++;
+              if(framesSent % 3 === 0) frameCountEl.textContent = `${framesSent} frames`;
+            }
+          }, 'image/jpeg', 0.85);
       }
       
       requestAnimationFrame(captureAndSend);
@@ -282,6 +278,7 @@
     };
 
     function initCamera() {
+        // Request standard 1080p to bypass Android digital crop on the main lens
         navigator.mediaDevices.getUserMedia({ 
             video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
         }).then(stream => {
@@ -289,8 +286,7 @@
             document.getElementById('initOverlay').style.display = 'none';
             video.onloadedmetadata = () => { 
                 connect(); 
-                // Properly inject the timestamp loop to start rendering
-                requestAnimationFrame(captureAndSend); 
+                captureAndSend(); 
             };
         });
     }
