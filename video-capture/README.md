@@ -6,6 +6,8 @@ This repository contains the real-time video streaming, dynamic edge-culling, an
 
 ## Architecture Overview
 
+![alt text](image.png)
+
 The system is designed to handle network backpressure and avoid buffer bloat using a decoupled two-phase pipeline:
 
 ```text

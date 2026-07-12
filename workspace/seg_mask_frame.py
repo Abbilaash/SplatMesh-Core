@@ -82,12 +82,14 @@ def letterbox(image, new_shape=640, color=(114, 114, 114)):
     }
 
 
-def preprocess(frame, input_size):
+def preprocess(frame, input_size, is_nhwc=False):
     """Prepare a BGR frame for ONNX Runtime inference."""
     padded, meta = letterbox(frame, input_size)
     rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
     tensor = rgb.astype(np.float32) / 255.0
-    tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
+    if not is_nhwc:
+        tensor = np.transpose(tensor, (2, 0, 1))
+    tensor = tensor[None, ...]
     return tensor, meta
 
 
@@ -202,13 +204,19 @@ def decode_detections(prediction, proto, input_shape, conf_thres, iou_thres):
     return detections
 
 
-def detection_mask_to_frame_mask(mask_coeffs, proto, box, meta, frame_shape, mask_threshold):
+def detection_mask_to_frame_mask(mask_coeffs, proto, box, meta, frame_shape, mask_threshold, is_qai_hub=False):
     """Project one detection mask back into original frame coordinates."""
-    proto_h, proto_w = proto.shape[1:3]
+    if is_qai_hub:
+        proto_h, proto_w = proto.shape[0:2]
+    else:
+        proto_h, proto_w = proto.shape[1:3]
     input_h, input_w = meta["input_shape"]
     original_h, original_w = frame_shape[:2]
 
-    mask = sigmoid(mask_coeffs @ proto.reshape(proto.shape[0], -1))
+    if is_qai_hub:
+        mask = sigmoid(proto.reshape(-1, proto.shape[2]) @ mask_coeffs)
+    else:
+        mask = sigmoid(mask_coeffs @ proto.reshape(proto.shape[0], -1))
     mask = mask.reshape(proto_h, proto_w)
     mask = cv2.resize(mask, (input_w, input_h), interpolation=cv2.INTER_LINEAR)
 
@@ -234,12 +242,54 @@ def detection_mask_to_frame_mask(mask_coeffs, proto, box, meta, frame_shape, mas
 
 def build_dynamic_mask(session, frame, input_size, conf_thres, iou_thres, mask_threshold, hole_close_kernel, dilate_kernel):
     """Run ONNX inference and combine all dynamic detections into one mask."""
-    tensor, meta = preprocess(frame, input_size)
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: tensor})
-    prediction, proto = parse_outputs(outputs)
+    # Check if the model is from Qualcomm AI Hub (has 5 outputs and NHWC inputs)
+    input_shape = session.get_inputs()[0].shape
+    is_nhwc = (input_shape[3] == 3) if len(input_shape) == 4 else False
+    is_qai_hub = (len(session.get_outputs()) == 5)
 
-    detections = decode_detections(prediction, proto, meta["input_shape"], conf_thres, iou_thres)
+    tensor, meta = preprocess(frame, input_size, is_nhwc=is_nhwc)
+    input_name = session.get_inputs()[0].name
+
+    if is_qai_hub:
+        output_names = [o.name for o in session.get_outputs()]
+        outputs = session.run(output_names, {input_name: tensor})
+        output_dict = dict(zip(output_names, outputs))
+
+        boxes = np.squeeze(output_dict["boxes"], axis=0)
+        scores = np.squeeze(output_dict["scores"], axis=0)
+        class_ids = np.squeeze(output_dict["class_idx"], axis=0).astype(np.int64)
+        mask_coeffs = np.squeeze(output_dict["mask_coeffs"], axis=0)
+        proto = np.squeeze(output_dict["mask_protos"], axis=0)
+
+        # Pre-filter detections for dynamic classes and confidence threshold
+        dynamic_mask = (scores >= conf_thres) & np.isin(class_ids, list(DYNAMIC_CLASS_IDS))
+        if not np.any(dynamic_mask):
+            return np.zeros(frame.shape[:2], dtype=np.uint8)
+
+        boxes = xywh_to_xyxy(boxes[dynamic_mask])
+        scores = scores[dynamic_mask]
+        class_ids = class_ids[dynamic_mask]
+        mask_coeffs = mask_coeffs[dynamic_mask]
+
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, meta["input_shape"][1])
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, meta["input_shape"][0])
+
+        keep = nms(boxes, scores, iou_thres)
+        detections = []
+        for index in keep:
+            detections.append(
+                {
+                    "box": boxes[index],
+                    "score": float(scores[index]),
+                    "class_id": int(class_ids[index]),
+                    "mask_coeffs": mask_coeffs[index],
+                }
+            )
+    else:
+        outputs = session.run(None, {input_name: tensor})
+        prediction, proto = parse_outputs(outputs)
+        detections = decode_detections(prediction, proto, meta["input_shape"], conf_thres, iou_thres)
+
     combined = np.zeros(frame.shape[:2], dtype=np.uint8)
     if not detections:
         return combined
@@ -252,6 +302,7 @@ def build_dynamic_mask(session, frame, input_size, conf_thres, iou_thres, mask_t
             meta,
             frame.shape,
             mask_threshold,
+            is_qai_hub=is_qai_hub,
         )
         combined = np.maximum(combined, detection_mask)
 
@@ -289,7 +340,22 @@ def build_session(model_path, providers):
     if not selected:
         raise RuntimeError(f"No usable ONNX Runtime providers found. Available providers: {available}")
 
-    return ort.InferenceSession(str(model_path), providers=selected)
+    # Map selected providers to their options if necessary (specifically for QNN)
+    session_providers = []
+    for provider in selected:
+        if provider == "QNNExecutionProvider":
+            session_providers.append((
+                "QNNExecutionProvider",
+                {
+                    "backend_path": "QnnHtp.dll",
+                    "profiling_level": "off",
+                    "rpc_control_latency": "100",
+                }
+            ))
+        else:
+            session_providers.append(provider)
+
+    return ort.InferenceSession(str(model_path), providers=session_providers)
 
 
 def main():

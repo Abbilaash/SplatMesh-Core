@@ -11,3 +11,6 @@ temp.py
 video-capture/capture/desktop/python_relay/data/*
 gaussian-splatting/*
 gsplat/*
+video-capture/capture/desktop/python_relay/splat_env/*
+workspace/venv/*
+workspace/export_assets/*
