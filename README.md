@@ -14,6 +14,8 @@ SplatMesh-Core is an edge-optimized ingestion and processing pipeline designed f
 
 **Trial with Depth Anything — Quantized using Qualcomm AI Hub**
 
+<img src="image-2.png" width="600" alt="Depth Anything Trial" />
+
 **Single frame of a computer mouse: Original vs. Depth Analyzed Sample**<br>
 <table>
   <tr>
