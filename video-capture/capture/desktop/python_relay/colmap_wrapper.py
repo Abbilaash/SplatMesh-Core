@@ -5,7 +5,12 @@ import subprocess
 from pathlib import Path
 
 def get_colmap_exe():
-    """Find colmap executable, falling back to C:\\colmap\\bin\\colmap.exe if not in PATH."""
+    """Find colmap executable. On Windows, we must use COLMAP.bat to load Qt plugins for the GPU."""
+    # Always prefer the batch file on Windows to prevent Qt environment errors
+    bat_path = Path("C:/colmap/COLMAP.bat")
+    if bat_path.exists():
+        return bat_path
+        
     colmap_path = shutil.which("colmap")
     if not colmap_path:
         fallback_exe = Path("C:/colmap/bin/colmap.exe")
@@ -17,7 +22,7 @@ def get_colmap_exe():
 
 def run_command(cmd, log_file):
     """Run a subprocess command, logging output to a log file."""
-    log_file.write(f"\n{'='*60}\nRunning: {' '.join(cmd)}\n{'='*60}\n")
+    log_file.write(f"\n{'='*60}\nRunning: {' '.join(str(c) for c in cmd)}\n{'='*60}\n")
     log_file.flush()
     
     result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)
@@ -52,33 +57,33 @@ def run_colmap_reconstruction(session_dir: Path) -> bool:
     sparse_dir.mkdir(parents=True, exist_ok=True)
 
     with open(log_path, "w", encoding="utf-8") as log_file:
-        # 1. Feature Extraction (SIFT CPU-only)
+        # 1. Feature Extraction (GPU Enabled)
         cmd_extract = [
-            "colmap", "feature_extractor",
+            str(colmap_exe), "feature_extractor",
             "--database_path", str(db_path),
             "--image_path", str(images_dir),
             "--ImageReader.single_camera", "1",
-            "--FeatureExtraction.use_gpu", "0"
+            "--FeatureExtraction.use_gpu", "1"
         ]
-        print("[COLMAP WRAPPER] Running Feature Extractor (CPU)...")
+        print("[COLMAP WRAPPER] Running Feature Extractor (GPU)...")
         if not run_command(cmd_extract, log_file):
             print("[COLMAP WRAPPER] [ERROR] Feature extraction failed. Check log for details.")
             return False
 
-        # 2. Sequential Feature Matching (CPU-only)
+        # 2. Sequential Feature Matching (GPU Enabled)
         cmd_match = [
-            "colmap", "sequential_matcher",
+            str(colmap_exe), "sequential_matcher",
             "--database_path", str(db_path),
-            "--FeatureMatching.use_gpu", "0"
+            "--FeatureMatching.use_gpu", "1"
         ]
-        print("[COLMAP WRAPPER] Running Feature Matcher (CPU)...")
+        print("[COLMAP WRAPPER] Running Feature Matcher (GPU)...")
         if not run_command(cmd_match, log_file):
             print("[COLMAP WRAPPER] [ERROR] Feature matching failed. Check log for details.")
             return False
 
         # 3. Sparse Reconstruction / Mapping
         cmd_map = [
-            "colmap", "mapper",
+            str(colmap_exe), "mapper",
             "--database_path", str(db_path),
             "--image_path", str(images_dir),
             "--output_path", str(sparse_dir)
@@ -107,7 +112,7 @@ def run_colmap_reconstruction(session_dir: Path) -> bool:
 
         # 5. Analyze Model quality
         cmd_analyze = [
-            "colmap", "model_analyzer",
+            str(colmap_exe), "model_analyzer",
             "--path", str(model_dir)
         ]
         run_command(cmd_analyze, log_file)
