@@ -151,7 +151,7 @@ async def handle_websocket(request):
                     session_state["frame_index"] += 1
                     idx = session_state["frame_index"]
 
-                    filename = f"frame_{ts}_{idx:06d}.jpg"
+                    filename = f"frame_{ts}_{idx:06d}_P{pitch:.1f}_R{roll:.1f}_Y{yaw:.1f}.jpg"
                     filepath = session_state["current_dir"] / "images" / filename
 
                     # Send to background thread for real-time sharpness check
