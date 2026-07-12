@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Extract keyframes from a video using blur and motion filtering."""
+"""Extract keyframes from an image directory using blur and uniform temporal filtering."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import shutil
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -28,19 +26,23 @@ class FrameMetrics:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract keyframes from a video using FFmpeg frame sampling."
+        description="Extract a targeted number of high-quality keyframes from a directory for 3D reconstruction."
     )
-    parser.add_argument("--video-path", required=True, help="Path to the input video file.")
+    parser.add_argument(
+        "--input-dir", 
+        required=True, 
+        help="Path to the directory containing raw input images (e.g., images_raw)."
+    )
     parser.add_argument(
         "--output-dir",
         required=True,
-        help="Directory where selected keyframes will be written.",
+        help="Directory where selected keyframes will be written (e.g., images).",
     )
     parser.add_argument(
-        "--fps",
-        type=float,
-        default=2.0,
-        help="Sampling rate used by FFmpeg before keyframe filtering.",
+        "--target-count",
+        type=int,
+        default=120,
+        help="Target number of keyframes to extract for COLMAP.",
     )
     parser.add_argument(
         "--blur-threshold",
@@ -48,39 +50,7 @@ def parse_args() -> argparse.Namespace:
         default=100.0,
         help="Minimum Laplacian variance required to keep a frame.",
     )
-    parser.add_argument(
-        "--keyframe-similarity-threshold",
-        type=float,
-        default=0.92,
-        help="Maximum similarity to the previous accepted keyframe before skipping a frame.",
-    )
     return parser.parse_args()
-
-
-def run_ffmpeg_frame_extraction(video_path: Path, frames_dir: Path, fps: float) -> list[Path]:
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    output_pattern = frames_dir / "frame_%06d.png"
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(video_path),
-        "-vf",
-        f"fps={fps}",
-        "-vsync",
-        "vfr",
-        str(output_pattern),
-    ]
-    completed = subprocess.run(command, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "FFmpeg frame extraction failed:\n"
-            f"Command: {' '.join(command)}\n"
-            f"stderr:\n{completed.stderr.strip()}"
-        )
-    return sorted(frames_dir.glob("frame_*.png"))
 
 
 def laplacian_variance(image: np.ndarray) -> float:
@@ -101,43 +71,54 @@ def frame_similarity(previous: np.ndarray, current: np.ndarray) -> float:
 
 
 def select_keyframes(
-    frame_paths: Iterable[Path],
+    frame_paths: list[Path],
     blur_threshold: float,
-    keyframe_similarity_threshold: float,
+    target_count: int,
 ) -> list[FrameMetrics]:
-    selected_frames: list[FrameMetrics] = []
-    previous_selected_image: np.ndarray | None = None
-
-    for frame_path in frame_paths:
-        image = cv2.imread(str(frame_path))
+    # Pass 1: Filter out blurry frames completely and record variances
+    sharp_candidates: list[Path] = []
+    blur_values: dict[Path, float] = {}
+    
+    for path in frame_paths:
+        image = cv2.imread(str(path))
         if image is None:
             continue
+        bv = laplacian_variance(image)
+        blur_values[path] = bv
+        if bv >= blur_threshold:
+            sharp_candidates.append(path)
 
-        blur_variance = laplacian_variance(image)
-        if blur_variance < blur_threshold:
-            selected_frames.append(
-                FrameMetrics(frame_path, blur_variance, 0.0, 0.0, False)
-            )
+    # Pass 2: Select target_count frames uniformly distributed across sharp frames
+    n_sharp = len(sharp_candidates)
+    if n_sharp <= target_count:
+        selected_paths = set(sharp_candidates)
+        if n_sharp < target_count:
+            print(f"Warning: Only found {n_sharp} sharp frames, which is less than target {target_count}.", file=sys.stderr)
+    else:
+        indices = [int(i * n_sharp / target_count) for i in range(target_count)]
+        selected_paths = set(sharp_candidates[idx] for idx in indices)
+
+    # Pass 3: Construct the final metrics mapping matched to original file order
+    selected_frames: list[FrameMetrics] = []
+    previous_selected_image = None
+    
+    for path in frame_paths:
+        if path not in blur_values:
             continue
-
-        if previous_selected_image is None:
-            selected_frames.append(
-                FrameMetrics(frame_path, blur_variance, 1.0, 0.0, True)
-            )
+            
+        bv = blur_values[path]
+        if path in selected_paths:
+            image = cv2.imread(str(path))
+            similarity = 0.0
+            if previous_selected_image is not None:
+                similarity = frame_similarity(previous_selected_image, image)
+            motion_score = 1.0 - similarity
+            
+            selected_frames.append(FrameMetrics(path, bv, motion_score, similarity, True))
             previous_selected_image = image
-            continue
-
-        similarity = frame_similarity(previous_selected_image, image)
-        motion_score = 1.0 - similarity
-        selected = similarity <= keyframe_similarity_threshold
-
-        selected_frames.append(
-            FrameMetrics(frame_path, blur_variance, motion_score, similarity, selected)
-        )
-
-        if selected:
-            previous_selected_image = image
-
+        else:
+            selected_frames.append(FrameMetrics(path, bv, 0.0, 0.0, False))
+            
     return selected_frames
 
 
@@ -150,7 +131,7 @@ def copy_selected_frames(metrics: Iterable[FrameMetrics], output_dir: Path) -> l
         if not metric.selected:
             continue
 
-        destination = output_dir / f"keyframe_{selected_index:04d}{metric.path.suffix}"
+        destination = output_dir / f"frame_{selected_index:04d}{metric.path.suffix}"
         shutil.copy2(metric.path, destination)
         written_files.append(destination)
         selected_index += 1
@@ -178,35 +159,37 @@ def write_manifest(output_dir: Path, metrics: list[FrameMetrics], selected_files
 
 def main() -> int:
     args = parse_args()
-    video_path = Path(args.video_path)
+    input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
 
-    if not video_path.exists():
-        print(f"Video file not found: {video_path}", file=sys.stderr)
+    if not input_dir.is_dir():
+        print(f"Input directory not found: {input_dir}", file=sys.stderr)
         return 1
 
-    if not shutil.which("ffmpeg"):
-        print("FFmpeg is not available on PATH.", file=sys.stderr)
+    # Grab all image files and sort them to maintain temporal sequence
+    valid_extensions = {".png", ".jpg", ".jpeg"}
+    frame_paths = sorted(
+        [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in valid_extensions]
+    )
+
+    if not frame_paths:
+        print(f"No images found in {input_dir}", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="extract_keyframes_") as temp_dir:
-        frames_dir = Path(temp_dir)
-        frame_paths = run_ffmpeg_frame_extraction(video_path, frames_dir, args.fps)
-        if not frame_paths:
-            print("No frames were extracted from the input video.", file=sys.stderr)
-            return 1
+    print(f"Found {len(frame_paths)} images in {input_dir}. Filtering...")
 
-        metrics = select_keyframes(
-            frame_paths,
-            blur_threshold=args.blur_threshold,
-            keyframe_similarity_threshold=args.keyframe_similarity_threshold,
-        )
-        selected_files = copy_selected_frames(metrics, output_dir)
-        write_manifest(output_dir, metrics, selected_files)
+    metrics = select_keyframes(
+        frame_paths,
+        blur_threshold=args.blur_threshold,
+        target_count=args.target_count,
+    )
+    
+    selected_files = copy_selected_frames(metrics, output_dir)
+    write_manifest(output_dir, metrics, selected_files)
 
     print(
-        f"Extracted {len(selected_files)} keyframes to {output_dir} "
-        f"from {len(metrics)} sampled frames."
+        f"Extracted {len(selected_files)} uniform keyframes to {output_dir} "
+        f"from {len(frame_paths)} raw candidates."
     )
     return 0
 
