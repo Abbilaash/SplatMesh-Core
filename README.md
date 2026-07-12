@@ -2,29 +2,32 @@
 
 SplatMesh-Core is an edge-optimized ingestion and processing pipeline designed for real-time 3D Gaussian Splatting and Structure-from-Motion (SfM). It dynamically manages network backpressure, performs intelligent edge-culling on the fly, and automates GPU-accelerated sparse point cloud generation.
 
+## Screenshots & Outputs
 
-## Screenshots/outputs
+**Example .ply model files generated from our COLMAP architecture pipelines**
 
-### Example .ply model files generated from our colmap architecture pipelines
-![alt text](image.png)
+<img src="image.png" width="500" alt="Ply model files" />
 
-### The streaming edge device - OnePlus 15 streaming video to the python server sharing the same LAN(subnet)
-![alt text](image-1.png)
+**The streaming edge device: OnePlus 15 streaming video to the Python server via LAN**
 
-### Trial with Depth Anything - quantised using Qualcomm AI Hub
+<img src="image-1.png" width="300" alt="Streaming edge device" />
 
-![alt text](image-2.png)
+**Trial with Depth Anything — Quantized using Qualcomm AI Hub**
 
-A single frame of computer mouse depth analysed sample:
-![alt text](frame_1783788351257_000452_P15.3_R-9.5_Y249.6.png)
+**Single frame of a computer mouse: Original vs. Depth Analyzed Sample**<br>
+<table>
+  <tr>
+    <td align="center"><b>Original Image</b></td>
+    <td align="center"><b>Depth Map</b></td>
+  </tr>
+  <tr>
+    <td><img src="frame_1783788351257_000452_P15.3_R-9.5_Y249.6.jpg" width="300" alt="Original Mouse"></td>
+    <td><img src="frame_1783788351257_000452_P15.3_R-9.5_Y249.6.png" width="300" alt="Depth Mouse"></td>
+  </tr>
+</table>
 
-Original Image:
-![alt text](frame_1783788351257_000452_P15.3_R-9.5_Y249.6.jpg)
-
-### Spatial field map of a chair from colmap wrapping, viewed on blender
-
-![alt text](image-3.png)
-
+**Spatial field map of a chair from COLMAP wrapping, viewed in Blender**<br>
+<img src="image-3.png" width="700" alt="Spatial field map">
 
 ---
 
