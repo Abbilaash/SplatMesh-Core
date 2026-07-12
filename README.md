@@ -2,6 +2,30 @@
 
 SplatMesh-Core is an edge-optimized ingestion and processing pipeline designed for real-time 3D Gaussian Splatting and Structure-from-Motion (SfM). It dynamically manages network backpressure, performs intelligent edge-culling on the fly, and automates GPU-accelerated sparse point cloud generation.
 
+
+## Screenshots/outputs
+
+### Example .ply model files generated from our colmap architecture pipelines
+![alt text](image.png)
+
+### The streaming edge device - OnePlus 15 streaming video to the python server sharing the same LAN(subnet)
+![alt text](image-1.png)
+
+### Trial with Depth Anything - quantised using Qualcomm AI Hub
+
+![alt text](image-2.png)
+
+A single frame of computer mouse depth analysed sample:
+![alt text](frame_1783788351257_000452_P15.3_R-9.5_Y249.6.png)
+
+Original Image:
+![alt text](frame_1783788351257_000452_P15.3_R-9.5_Y249.6.jpg)
+
+### Spatial field map of a chair from colmap wrapping, viewed on blender
+
+![alt text](image-3.png)
+
+
 ---
 
 ## 1. System Components
